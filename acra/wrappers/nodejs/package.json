@@ -1,0 +1,27 @@
+{
+  "name": "acrawriter",
+  "version": "1.0.1",
+  "description": "AcraWriter library for iOS: encrypts data into AcraStructs, allowing Acra to decrypt it",
+  "main": "acrawriter.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cossacklabs/acra/wrappers/nodejs/"
+  },
+  "keywords": [
+    "themis",
+    "acra"
+  ],
+  "author": {
+    "name": "Cossack Labs",
+    "email": "dev@cossacklabs.com",
+    "url": "https://cossacklabs.com/"
+  },
+  "dependencies": {
+    "jsthemis": "*",
+    "int64-buffer": "*"
+  },
+  "license": "Apache-2.0"
+}

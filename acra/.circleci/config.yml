@@ -1,0 +1,610 @@
+version: 2
+jobs:
+  build_binaries:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+    environment:
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+    steps:
+      # prepare
+      - checkout
+      - run:
+          command: python3 tests/generate_random_data.py
+          environment:
+            TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      - run:
+          command: ".circleci/build_binaries.sh"
+          environment:
+            OUTPUT_FOLDER: /tmp/acra-binaries
+      - save_cache:
+          # cache only for one commit, don't cache between commits because binaries should be changed
+          # but it's okay to cache them for same commit because it will avoid re-building on re-run commands
+          key: integration_tests_preparements_.{{ .Revision }}
+          paths:
+            - /tmp/test_data
+            - /tmp/acra-binaries
+
+  general_validation:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      - image: cossacklabs/vault-ssl:1.6.2
+        command: server -dev -dev-root-token-id="root_token"
+        environment:
+          VAULT_LOCAL_CONFIG: '{"listener": [{"tcp":{"address": "0.0.0.0:8201","tls_disable":"0", "tls_cert_file":"/data/vault-volume/vault_crt.pem", "tls_key_file":"/data/vault-volume/vault_key.pem"}}], "default_lease_ttl": "168h", "max_lease_ttl": "720h"}, "ui": true, "storage":{"file":{"path":"/vault/data"}}}'
+          VAULT_DEV_ROOT_TOKEN_ID: 'root_token'
+          VAULT_TOKEN: 'root_token'
+      - image: redis:6.0.16-alpine
+      # run one more redis container with tls support on 6380 port
+      - image: cossacklabs/redis-ssl:7.0-alpine
+        command: [ '--tls-cert-file /tmp.ssl/redis.crt', '--tls-key-file /tmp.ssl/redis.key',
+                   '--tls-ca-cert-file /tmp.ssl/ca.crt', '--tls-auth-clients yes',
+                   '--port 0', '--tls-port 6380' ]
+    environment:
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+      TEST_DB_PORT: "5432"
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "on"
+      TEST_VAULT_PORT: 8201
+      TEST_VAULT_HOST: localhost
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # HashiCorp Vault and Redis are neighbor containers and need some time to start
+      # wait for the containers to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_vault_connection.sh
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_redis_connection.sh
+      # validation
+      - run: .circleci/check_gofmt.sh
+      - run:
+          command: .circleci/check_configs.sh | tee /home/user/tests_output
+          environment:
+            BINARY_FOLDER: /tmp/acra-binaries/latest
+      - run: .circleci/check_golint.sh
+      - run: .circleci/check_misspell.sh
+      - run: .circleci/check_ineffassign.sh
+        # run go test with race detector only with latest version because it is slower and we expect that latest version
+        # has the newest and all existing algorithms for race detection
+      - run:
+          command: .circleci/check_gotest.sh
+          environment:
+            - TEST_BUILD_TAGS: "integration,boltdb,redis,vault"
+            - TEST_EXTRA_BUILD_FLAGS: "-race"
+            - GO_VERSIONS: 1.21.0
+      # run tests with redis + tls using separate redis' container with tls
+      - run:
+          command: .circleci/check_gotest.sh
+          environment:
+            - GO_VERSIONS: 1.21.0
+            - TEST_REDIS_HOSTPORT: "localhost:6380"
+            - TEST_BUILD_TAGS: "integration,redis,tls"
+      # check python wrapper
+      - run: PYTHONPATH=`pwd`/wrappers/python python3 wrappers/python/acrawriter/tests.py
+
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  postgresql-ssl:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      - image: cossacklabs/postgresql-ssl:11-1
+        environment:
+          POSTGRES_PASSWORD: test
+          POSTGRES_USER: test
+          POSTGRES_DB: test
+      - image: cossacklabs/redis-ssl:7.0-alpine
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "5432"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "on"
+      TEST_REDIS: "on"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_postgresql_connection.sh
+      # testing
+      # generate test data for integration tests
+      - run: python3 tests/generate_random_data.py
+      - run:
+          command: .circleci/check_gotest.sh
+          environment:
+            - TEST_BUILD_TAGS: "integration,postgresql"
+            - GO_VERSIONS: 1.21.0
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (keystore v1)
+          environment:
+            TEST_KEYSTORE: v1
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (keystore v2)
+          environment:
+            TEST_KEYSTORE: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  postgresql:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      - image: postgres:11-alpine
+        environment:
+          POSTGRES_PASSWORD: test
+          POSTGRES_USER: test
+          POSTGRES_DB: test
+      - image: redis:6.0.16-alpine
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "5432"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "off"
+      TEST_REDIS: "on"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_postgresql_connection.sh
+      - run:
+          command: .circleci/check_gotest.sh
+          environment:
+            - TEST_BUILD_TAGS: "integration,postgresql"
+            - GO_VERSIONS: 1.21.0
+      # testing
+      # generate test data for integration tests
+      - run: python3 tests/generate_random_data.py
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (keystore v1)
+          environment:
+            TEST_KEYSTORE: v1
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (keystore v2)
+          environment:
+            TEST_KEYSTORE: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  postgresql-integrations:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      - image: nsmithuk/local-kms:3.11.2
+      - image: consul:1.13
+      - image: cossacklabs/postgresql-ssl:11-1
+        environment:
+          POSTGRES_PASSWORD: test
+          POSTGRES_USER: test
+          POSTGRES_DB: test
+      - image: vault:1.6.2
+        environment:
+          VAULT_LOCAL_CONFIG: '{"listener":[{"tcp": {"address": "0.0.0.0:8201","tls_disable": "1"}}],"ui":true,"storage":{"file":{"path":"/vault/data"}}}'
+          VAULT_TOKEN: 'root_token'
+        command: server -dev -dev-root-token-id="root_token"
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "5432"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "on"
+      TEST_WITH_VAULT: "on"
+      TEST_WITH_AWS_KMS: "on"
+      TEST_CONSUL_ENCRYPTOR_CONFIG: "on"
+      VAULT_API_TOKEN: cm9vdF90b2tlbgo= # base64 of the root_token
+      TEST_POSTGRESQL: "off"
+      TEST_NAME_PATTERN: "MasterKeyLoader,Consul"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_postgresql_connection.sh
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (kv secret_engine v1)
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (kv secret_engine v2)
+          environment:
+            VAULT_KV_ENGINE_VERSION: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+
+  postgresql-integrations-ssl:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      - image: cossacklabs/postgresql-ssl:11-1
+        environment:
+          POSTGRES_PASSWORD: test
+          POSTGRES_USER: test
+          POSTGRES_DB: test
+      - image: cossacklabs/vault-ssl:1.6.2
+        environment:
+          VAULT_LOCAL_CONFIG: '{"listener": [{"tcp":{"address": "0.0.0.0:8201","tls_disable":"0", "tls_cert_file":"/data/vault-volume/vault_crt.pem", "tls_key_file":"/data/vault-volume/vault_key.pem"}}], "default_lease_ttl": "168h", "max_lease_ttl": "720h"}, "ui": true, "storage":{"file":{"path":"/vault/data"}}}'
+          VAULT_TOKEN: 'root_token'
+        command: server -dev -dev-root-token-id="root_token"
+      - image: cossacklabs/consul-ssl:1.13
+        environment:
+          CONSUL_LOCAL_CONFIG: '{"verify_incoming":true,"verify_outgoing":true,"verify_server_hostname":false,"ca_file":"/data/consul-volume/root.crt","cert_file":"/data/consul-volume/dc1-server-consul-0.pem","key_file":"/data/consul-volume/dc1-server-consul-0-key.pem","ports":{"http":-1,"https":8501}}'
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "5432"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "on"
+      TEST_WITH_VAULT: "on"
+      TEST_SSL_VAULT: "on"
+      TEST_SSL_CONSUL: "on"
+      TEST_CONSUL_ENCRYPTOR_CONFIG: "on"
+      VAULT_ADDRESS: https://localhost:8201/
+      VAULT_API_TOKEN: cm9vdF90b2tlbgo= # base64 of the root_token
+      TEST_POSTGRESQL: "off"
+      TEST_NAME_PATTERN: "Consul,Vault"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_postgresql_connection.sh
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (kv secret_engine v1)
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (kv secret_engine v2)
+          environment:
+            VAULT_KV_ENGINE_VERSION: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  mariadb-ssl:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      # use the same credentials for mysql db as for postgresql (which support was added first)
+      # has latest tag on 2018.03.29
+      - image: cossacklabs/mariadb-ssl:10.7.1
+        environment:
+          MYSQL_DATABASE: test
+          MYSQL_USER: test
+          MYSQL_PASSWORD: test
+          MYSQL_ROOT_PASSWORD: root
+      - image: cossacklabs/redis-ssl:7.0-alpine
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "3306"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      TEST_MYSQL: "true"
+      TEST_MARIADB: "true"
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "on"
+      TEST_REDIS: "on"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_mysql_connection.sh
+      # testing
+      # generate test data for integration tests
+      - run: python3 tests/generate_random_data.py
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (keystore v1)
+          environment:
+            TEST_KEYSTORE: v1
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (keystore v2)
+          environment:
+            TEST_KEYSTORE: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  mariadb:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      # use the same credentials for mysql db as for postgresql (which support was added first)
+      # has latest tag on 2018.03.29
+      - image: mariadb:latest
+        environment:
+          MYSQL_DATABASE: test
+          MYSQL_USER: test
+          MYSQL_PASSWORD: test
+          MYSQL_ROOT_PASSWORD: root
+      - image: redis:6.0.16-alpine
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "3306"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+      TEST_MYSQL: "true"
+      TEST_MARIADB: "true"
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "off"
+      TEST_REDIS: "on"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_mysql_connection.sh
+      - run:
+          command: .circleci/check_gotest.sh
+          environment:
+            - TEST_BUILD_TAGS: "integration,mysql"
+            - GO_VERSIONS: 1.21.0
+      # testing
+      # generate test data for integration tests
+      - run: python3 tests/generate_random_data.py
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (keystore v1)
+          environment:
+            TEST_KEYSTORE: v1
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (keystore v2)
+          environment:
+            TEST_KEYSTORE: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  mysql-ssl:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      # use the same credentials for mysql db as for postgresql (which support was added first)
+      # has latest tag on 2018.03.29
+      - image: cossacklabs/mysql-ssl:5.7.31-1
+        environment:
+          MYSQL_DATABASE: test
+          MYSQL_USER: test
+          MYSQL_PASSWORD: test
+          MYSQL_ROOT_PASSWORD: root
+      - image: cossacklabs/redis-ssl:7.0-alpine
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "3306"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      TEST_MYSQL: "true"
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "on"
+      TEST_REDIS: "on"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_mysql_connection.sh
+      # testing
+      # generate test data for integration tests
+      - run: python3 tests/generate_random_data.py
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (keystore v1)
+          environment:
+            TEST_KEYSTORE: v1
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (keystore v2)
+          environment:
+            TEST_KEYSTORE: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  mysql:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+      - image: mysql:5.7.25
+        environment:
+          MYSQL_DATABASE: test
+          MYSQL_USER: test
+          MYSQL_PASSWORD: test
+          MYSQL_ROOT_PASSWORD: root
+      - image: redis:6.0.16-alpine
+    environment:
+      TEST_DB_USER: test
+      TEST_DB_USER_PASSWORD: test
+      TEST_DB_NAME: test
+      TEST_DB_PORT: "3306"
+      FILEPATH_ERROR_FLAG: /tmp/test_fail
+      GO_VERSIONS: 1.21.0
+      TEST_MYSQL: "true"
+      TEST_RANDOM_DATA_FOLDER: /tmp/test_data
+      TEST_TLS: "off"
+      TEST_REDIS: "on"
+      TEST_BINARY_OUTPUT_FOLDER: /tmp/acra-binaries
+    steps:
+      # prepare
+      - checkout
+      - restore_cache:
+          keys:
+            - integration_tests_preparements_.{{ .Revision }}
+      # database in neighbor container need some time to start
+      # wait for the DB to be reachable, up to 15 pings with 1 second interval
+      - run: NUM_PINGS=15 DELAY=1 .circleci/check_mysql_connection.sh
+      - run:
+          command: .circleci/check_gotest.sh
+          environment:
+            - TEST_BUILD_TAGS: "integration,mysql"
+            - GO_VERSIONS: 1.21.0
+      # testing
+      # generate test data for integration tests
+      - run: python3 tests/generate_random_data.py
+      # each iteration pass to test different ports for forks to avoid problems with TCP TIME WAIT between tests
+      - run:
+          name: Integration tests (keystore v1)
+          environment:
+            TEST_KEYSTORE: v1
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - run:
+          name: Integration tests (keystore v2)
+          environment:
+            TEST_KEYSTORE: v2
+          command: |
+            .circleci/integration.sh
+            if [ -f  $FILEPATH_ERROR_FLAG ]; then cat "$FILEPATH_ERROR_FLAG"; rm "$FILEPATH_ERROR_FLAG"; exit 1; fi
+      - store_test_results:
+          path: /home/user/tests_output
+      - store_artifacts:
+          path: /home/user/tests_output
+
+  build_image:
+    docker:
+      - image: cossacklabs/ci-py-go-themis:0.95.2
+    steps:
+      # prepare
+      - checkout
+      # https://circleci.com/docs/2.0/building-docker-images/#docker-version
+      - setup_remote_docker:
+          version: docker24
+      - run:
+          name: Install Docker client
+          command: |
+            set -x
+            VER="18.09.3"
+            curl -L -o /tmp/docker-$VER.tgz https://download.docker.com/linux/static/stable/x86_64/docker-$VER.tgz
+            tar -xz -C /tmp -f /tmp/docker-$VER.tgz
+            sudo mv /tmp/docker/* /usr/bin
+      - run: make docker-build
+
+workflows:
+  version: 2
+  tests:
+    jobs:
+      - build_binaries
+      - general_validation:
+          requires:
+            - build_binaries
+      - postgresql:
+          requires:
+            - build_binaries
+      - postgresql-ssl:
+          requires:
+            - build_binaries
+      - mysql:
+          requires:
+            - build_binaries
+      - mysql-ssl:
+          requires:
+            - build_binaries
+      - mariadb:
+          requires:
+            - build_binaries
+      - mariadb-ssl:
+          requires:
+            - build_binaries
+      - postgresql-integrations:
+          requires:
+            - build_binaries
+      - postgresql-integrations-ssl:
+          requires:
+            - build_binaries
+      - build_image
