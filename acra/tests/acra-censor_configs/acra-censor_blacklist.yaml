@@ -1,0 +1,12 @@
+ignore_parse_error: true
+version: 0.85.0
+handlers:
+  - handler: deny
+    queries:
+      - select * from test
+    tables:
+      - acrarollback_output
+    patterns:
+      - select data from test %%WHERE%%
+      - "%%INSERT%%"
+  - handler: allowall
