@@ -20,7 +20,7 @@
   }
   .wrap{max-width:1180px;margin:0 auto;}
   header{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;
-    border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:28px;}
+    border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:20px;}
   .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:var(--violet);
     text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px;}
   .eyebrow::before{content:'';width:6px;height:6px;background:var(--violet);border-radius:50%;box-shadow:0 0 8px var(--violet);}
@@ -29,6 +29,15 @@
   .sub{color:var(--ink-dim);font-size:14px;max-width:480px;margin-top:10px;line-height:1.5;}
   .status{font-family:var(--mono);font-size:12px;color:var(--ink-dim);text-align:right;line-height:1.8;}
   .status b{color:var(--teal);}
+  .status b.offline{color:var(--amber);}
+
+  .banner{
+    font-family:var(--mono);font-size:12px;padding:10px 16px;border-radius:8px;margin-bottom:20px;
+    display:none;align-items:center;gap:10px;border:1px solid;
+  }
+  .banner.show{display:flex;}
+  .banner.warn{background:#241b0c;border-color:#4a3416;color:var(--amber);}
+  .banner.ok{background:#0c2420;border-color:#1e3d37;color:var(--teal);}
 
   #loginPanel{max-width:380px;margin:60px auto;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;padding:28px;}
@@ -41,6 +50,7 @@
   #loginBtn{width:100%;font-family:var(--mono);font-size:13px;padding:11px;background:var(--violet);
     color:#0a0812;border:none;border-radius:7px;cursor:pointer;font-weight:600;}
   #loginBtn:hover{filter:brightness(1.1);}
+  #loginBtn:disabled{opacity:.6;cursor:wait;}
   #loginErr{color:var(--danger);font-size:12px;margin-top:10px;font-family:var(--mono);min-height:16px;}
   .creds{font-family:var(--mono);font-size:10px;color:var(--ink-dim);margin-top:14px;line-height:1.6;}
 
@@ -74,7 +84,7 @@
   .layer.unlocked{background:linear-gradient(120deg,#14202066,#0f1a2666);border-color:#2a4a44;}
   .layer-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;}
   .layer-name{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;}
-  .layer-icon{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;}
+  .layer-icon{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-family:var(--mono);}
   .layer.locked .layer-icon{background:#241f33;color:var(--ink-dim);}
   .layer.unlocked .layer-icon{background:#16342e;color:var(--teal);}
   .layer-tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
@@ -93,6 +103,7 @@
     border-bottom:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;}
   .audit-row b{color:var(--teal);}
   .audit-row .w{color:var(--danger);}
+  .empty{font-family:var(--mono);font-size:12px;color:var(--ink-dim);padding:10px 0;}
 </style>
 </head>
 <body>
@@ -102,13 +113,20 @@
     <div>
       <div class="eyebrow">PS-15 - Live Prototype</div>
       <h1>STRATA - Layered <span>Data Encryption</span></h1>
-      <p class="sub">Every transaction is AES-256-GCM encrypted per layer on the server. Your role only ever receives keys for layers it's entitled to - decryption happens in your browser via Web Crypto.</p>
+      <p class="sub">Every transaction is AES-256-GCM encrypted per layer. Your role only ever receives keys for layers it's entitled to - decryption happens in your browser via Web Crypto.</p>
     </div>
     <div class="status">
-      API: <b id="apiStatus">checking...</b><br>
+      BACKEND: <b id="apiStatus">checking...</b><br>
       SESSION: <b id="sessionStatus">none</b>
     </div>
   </header>
+
+  <div class="banner warn" id="offlineBanner">
+    Backend not reachable - running fully in offline demo mode (all encryption still happens for real, locally in your browser).
+  </div>
+  <div class="banner ok" id="onlineBanner">
+    Connected to live backend.
+  </div>
 
   <div id="loginPanel">
     <h2>Sign in</h2>
@@ -144,16 +162,117 @@
     </div>
 
     <div class="panel audit">
-      <div class="panel-title">Audit Log - every disclosure event, recorded server-side</div>
+      <div class="panel-title">Audit Log - every disclosure event</div>
       <div id="auditList"></div>
     </div>
   </div>
 </div>
 
 <script>
-const API = ''; // same origin
+const API = '';
+let MODE = 'checking';
 let TOKEN = null, ROLE = null, TXNS = [], currentTxn = null;
 let selectedUser = 'customer';
+
+const LAYERS = ['meta', 'routing', 'identity', 'compliance'];
+const ACCESS = {
+  customer:  ['meta', 'routing'],
+  bank:      ['meta', 'routing', 'identity'],
+  auditor:   ['meta', 'identity', 'compliance'],
+  regulator: ['meta', 'routing', 'identity', 'compliance'],
+};
+const PASS = { customer:'customer123', bank:'bank123', auditor:'auditor123', regulator:'regulator123' };
+const LAYER_META = {
+  meta:       { name: 'Metadata' },
+  routing:    { name: 'Routing & Amount' },
+  identity:   { name: 'Party Identity' },
+  compliance: { name: 'Compliance & Risk' },
+};
+
+const RAW_TXNS_LOCAL = [
+  { id:'TXN-88213', meta:{ time:'2026-08-16 02:01', status:'SETTLED' },
+    routing:{ amount:'Rs 4,82,000', currency:'INR', route:'HDFC -> ICICI' },
+    identity:{ sender:'A. Verma', receiver:'Nairang Traders', account:'9981667743' },
+    compliance:{ kyc:'KYC-90211', purpose:'B2B Invoice #4471', risk:'Low (12)' } },
+  { id:'TXN-88214', meta:{ time:'2026-08-16 02:14', status:'PENDING' },
+    routing:{ amount:'$12,300', currency:'USD', route:'Citi -> DBS SG' },
+    identity:{ sender:'Meridian Freight LLC', receiver:'Orca Logistics Pte', account:'5502212290' },
+    compliance:{ kyc:'KYC-55810', purpose:'Freight Settlement', risk:'Medium (46)' } },
+  { id:'TXN-88215', meta:{ time:'2026-08-16 02:22', status:'FLAGGED' },
+    routing:{ amount:'EUR 9,750', currency:'EUR', route:'Deutsche -> Revolut' },
+    identity:{ sender:'Halvorsen Consulting', receiver:'K. Oyelaran', account:'7743390087' },
+    compliance:{ kyc:'KYC-71120', purpose:'Consulting Fee', risk:'High (81)' } },
+];
+let LOCAL_AUDIT = [];
+
+async function deriveLayerKeyLocal(txnId, layerKey) {
+  const enc = new TextEncoder();
+  const data = enc.encode('strata-local-demo-secret:' + txnId + ':' + layerKey);
+  return crypto.subtle.digest('SHA-256', data);
+}
+
+function bufToB64(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+}
+function b64ToBuf(b64) {
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+
+async function encryptLayerLocal(txnId, layerKey, obj) {
+  const keyBits = await deriveLayerKeyLocal(txnId, layerKey);
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBits, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new TextEncoder().encode(JSON.stringify(obj));
+  const ctBuf = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, cryptoKey, data);
+  return { iv: bufToB64(iv), ciphertext: bufToB64(ctBuf) };
+}
+
+async function decryptLayerLocal(txnId, layerKey, blob) {
+  const keyBits = await deriveLayerKeyLocal(txnId, layerKey);
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBits, 'AES-GCM', false, ['decrypt']);
+  const iv = b64ToBuf(blob.iv);
+  const ct = b64ToBuf(blob.ciphertext);
+  const plainBuf = await crypto.subtle.decrypt({ name:'AES-GCM', iv }, cryptoKey, ct);
+  return JSON.parse(new TextDecoder().decode(plainBuf));
+}
+
+let LOCAL_VAULT = {};
+async function buildLocalVault() {
+  LOCAL_VAULT = {};
+  for (const txn of RAW_TXNS_LOCAL) {
+    LOCAL_VAULT[txn.id] = {};
+    for (const layerKey of LAYERS) {
+      LOCAL_VAULT[txn.id][layerKey] = await encryptLayerLocal(txn.id, layerKey, txn[layerKey]);
+    }
+  }
+}
+
+function logLocalAudit(entry) {
+  LOCAL_AUDIT.unshift(Object.assign({}, entry, { ts: new Date().toISOString() }));
+  if (LOCAL_AUDIT.length > 200) LOCAL_AUDIT.pop();
+}
+
+async function detectBackend() {
+  try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 1500);
+    const res = await fetch(`${API}/api/transactions`, { signal: ctrl.signal });
+    clearTimeout(timeout);
+    if (res.ok) {
+      MODE = 'api';
+      document.getElementById('apiStatus').textContent = 'connected';
+      document.getElementById('onlineBanner').classList.add('show');
+    } else {
+      throw new Error('bad status');
+    }
+  } catch (e) {
+    MODE = 'local';
+    document.getElementById('apiStatus').textContent = 'offline (using demo mode)';
+    document.getElementById('apiStatus').classList.add('offline');
+    document.getElementById('offlineBanner').classList.add('show');
+    await buildLocalVault();
+  }
+}
 
 document.querySelectorAll('#rolePick button').forEach(b => {
   b.addEventListener('click', () => {
@@ -164,19 +283,40 @@ document.querySelectorAll('#rolePick button').forEach(b => {
 });
 document.querySelector('#rolePick button').classList.add('sel');
 
-const PASS = { customer:'customer123', bank:'bank123', auditor:'auditor123', regulator:'regulator123' };
-
 document.getElementById('loginBtn').addEventListener('click', async () => {
   const err = document.getElementById('loginErr');
+  const btn = document.getElementById('loginBtn');
   err.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+
   try {
-    const res = await fetch(`${API}/api/login`, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ username: selectedUser, password: PASS[selectedUser] })
-    });
-    if (!res.ok) throw new Error((await res.json()).error || 'Login failed');
-    const data = await res.json();
-    TOKEN = data.token; ROLE = data.role;
+    if (MODE === 'api') {
+      try {
+        const res = await fetch(`${API}/api/login`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ username: selectedUser, password: PASS[selectedUser] })
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Login failed');
+        const data = await res.json();
+        TOKEN = data.token; ROLE = data.role;
+      } catch (apiErr) {
+        MODE = 'local';
+        document.getElementById('apiStatus').textContent = 'offline (using demo mode)';
+        document.getElementById('apiStatus').classList.add('offline');
+        document.getElementById('offlineBanner').classList.add('show');
+        document.getElementById('onlineBanner').classList.remove('show');
+        await buildLocalVault();
+        ROLE = selectedUser;
+        TOKEN = 'local';
+        logLocalAudit({ event:'login', role: ROLE, username: selectedUser });
+      }
+    } else {
+      ROLE = selectedUser;
+      TOKEN = 'local';
+      logLocalAudit({ event:'login', role: ROLE, username: selectedUser });
+    }
+
     document.getElementById('loginPanel').style.display = 'none';
     document.getElementById('app').style.display = 'block';
     document.getElementById('roleLabel').textContent = ROLE;
@@ -184,7 +324,10 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
     await loadTransactions();
     loadAudit();
   } catch (e) {
-    err.textContent = e.message;
+    err.textContent = e.message || 'Something went wrong';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
   }
 });
 
@@ -196,8 +339,16 @@ document.getElementById('logoutBtn').addEventListener('click', () => {
 });
 
 async function loadTransactions() {
-  const res = await fetch(`${API}/api/transactions`);
-  TXNS = await res.json();
+  if (MODE === 'api') {
+    try {
+      const res = await fetch(`${API}/api/transactions`);
+      TXNS = await res.json();
+    } catch (e) {
+      TXNS = RAW_TXNS_LOCAL.map(t => ({ id: t.id, status: t.meta.status, time: t.meta.time }));
+    }
+  } else {
+    TXNS = RAW_TXNS_LOCAL.map(t => ({ id: t.id, status: t.meta.status, time: t.meta.time }));
+  }
   renderTxnList();
   if (TXNS.length) selectTxn(TXNS[0].id);
 }
@@ -214,40 +365,53 @@ function renderTxnList() {
   });
 }
 
-const LAYER_META = {
-  meta:       { name: 'Metadata',          icon:'M' },
-  routing:    { name: 'Routing & Amount',  icon:'R' },
-  identity:   { name: 'Party Identity',    icon:'ID' },
-  compliance: { name: 'Compliance & Risk', icon:'C' },
-};
-
 async function selectTxn(id) {
   currentTxn = id;
   renderTxnList();
   document.getElementById('activeTxnId').textContent = id;
-  document.getElementById('stack').innerHTML = '<div class="panel-title">Decrypting...</div>';
+  document.getElementById('stack').innerHTML = '<div class="empty">Decrypting...</div>';
 
-  const headers = { Authorization: `Bearer ${TOKEN}` };
-  const [ctRes, keyRes] = await Promise.all([
-    fetch(`${API}/api/transactions/${id}/ciphertext`, { headers }),
-    fetch(`${API}/api/transactions/${id}/keys`, { headers }),
-  ]);
-  const ct = await ctRes.json();
-  const keyData = await keyRes.json();
+  let layers, allowedLayers, keys;
+
+  if (MODE === 'api') {
+    try {
+      const headers = { Authorization: `Bearer ${TOKEN}` };
+      const [ctRes, keyRes] = await Promise.all([
+        fetch(`${API}/api/transactions/${id}/ciphertext`, { headers }),
+        fetch(`${API}/api/transactions/${id}/keys`, { headers }),
+      ]);
+      if (!ctRes.ok || !keyRes.ok) throw new Error('backend error');
+      const ct = await ctRes.json();
+      const keyData = await keyRes.json();
+      layers = ct.layers;
+      allowedLayers = keyData.allowedLayers;
+      keys = keyData.keys;
+    } catch (e) {
+      layers = LOCAL_VAULT[id];
+      allowedLayers = ACCESS[ROLE] || [];
+      keys = null;
+    }
+  } else {
+    layers = LOCAL_VAULT[id];
+    allowedLayers = ACCESS[ROLE] || [];
+    keys = null;
+  }
 
   const stack = document.getElementById('stack');
   stack.innerHTML = '';
 
   for (const layerKey of Object.keys(LAYER_META)) {
-    const blob = ct.layers[layerKey];
-    const isUnlocked = keyData.allowedLayers.includes(layerKey);
+    const blob = layers[layerKey];
+    const isUnlocked = allowedLayers.includes(layerKey);
     const div = document.createElement('div');
     div.className = 'layer ' + (isUnlocked ? 'unlocked' : 'locked');
     const meta = LAYER_META[layerKey];
 
     let fieldsHtml = '';
     if (isUnlocked) {
-      const plain = await decryptLayer(blob, keyData.keys[layerKey]);
+      const plain = keys
+        ? await decryptLayerApi(blob, keys[layerKey])
+        : await decryptLayerLocal(id, layerKey, blob);
       fieldsHtml = `<div class="layer-body">` + Object.entries(plain).map(([k,v]) =>
         `<div><div class="field-label">${k}</div><div class="field-value">${v}</div></div>`
       ).join('') + `</div>`;
@@ -257,7 +421,7 @@ async function selectTxn(id) {
 
     div.innerHTML = `
       <div class="layer-head">
-        <div class="layer-name"><span class="layer-icon">${isUnlocked?'[unlocked]':'[locked]'}</span>${meta.name}</div>
+        <div class="layer-name"><span class="layer-icon">${isUnlocked?'OPEN':'LOCK'}</span>${meta.name}</div>
         <span class="layer-tag">${isUnlocked ? 'Decrypted (AES-256-GCM)' : 'Ciphertext - no key held'}</span>
       </div>
       ${fieldsHtml}
@@ -265,28 +429,46 @@ async function selectTxn(id) {
     stack.appendChild(div);
   }
 
+  if (!keys) {
+    logLocalAudit({
+      event: 'disclose', role: ROLE, username: ROLE, txnId: id,
+      layersRevealed: allowedLayers,
+      layersWithheld: LAYERS.filter(l => !allowedLayers.includes(l)),
+    });
+  }
+
   loadAudit();
 }
 
-async function decryptLayer(blob, base64Key) {
-  const keyBytes = Uint8Array.from(atob(base64Key), c => c.charCodeAt(0));
-  const iv = Uint8Array.from(atob(blob.iv), c => c.charCodeAt(0));
-  const ciphertext = Uint8Array.from(atob(blob.ciphertext), c => c.charCodeAt(0));
-  const tag = Uint8Array.from(atob(blob.tag), c => c.charCodeAt(0));
-
+async function decryptLayerApi(blob, base64Key) {
+  const keyBytes = b64ToBuf(base64Key);
+  const iv = b64ToBuf(blob.iv);
+  const ciphertext = b64ToBuf(blob.ciphertext);
+  const tag = b64ToBuf(blob.tag);
   const combined = new Uint8Array(ciphertext.length + tag.length);
   combined.set(ciphertext, 0);
   combined.set(tag, ciphertext.length);
-
   const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
   const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, combined);
   return JSON.parse(new TextDecoder().decode(plainBuf));
 }
 
 async function loadAudit() {
-  const res = await fetch(`${API}/api/audit`);
-  const log = await res.json();
+  let log;
+  if (MODE === 'api') {
+    try {
+      const res = await fetch(`${API}/api/audit`);
+      log = await res.json();
+    } catch (e) {
+      log = LOCAL_AUDIT;
+    }
+  } else {
+    log = LOCAL_AUDIT;
+  }
+
   const list = document.getElementById('auditList');
+  if (!log.length) { list.innerHTML = '<div class="empty">No activity yet.</div>'; return; }
+
   list.innerHTML = log.map(e => {
     if (e.event === 'login') {
       return `<div class="audit-row"><b>${e.ts}</b> ${e.username} signed in as ${e.role}</div>`;
@@ -295,9 +477,7 @@ async function loadAudit() {
   }).join('');
 }
 
-fetch(`${API}/api/transactions`).then(r => {
-  document.getElementById('apiStatus').textContent = r.ok ? 'connected' : 'error';
-}).catch(() => { document.getElementById('apiStatus').textContent = 'offline'; });
+detectBackend();
 </script>
 </body>
 </html>
