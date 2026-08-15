@@ -161,6 +161,55 @@
       </div>
     </div>
 
+    <div class="panel live-lab">
+      <div class="panel-title">Live Encryption Lab - Real API</div>
+      <p style="color:var(--ink-dim);font-size:12px;margin:8px 0 14px;">
+        Enter any value and send it through the STRATA encryption API.
+      </p>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <input id="demoInput" type="text"
+          value="Hello STRATA - secret transaction"
+          placeholder="Enter data to encrypt..."
+          style="flex:1;min-width:260px;padding:12px;border-radius:8px;border:1px solid var(--line);background:#08070d;color:var(--ink);">
+
+        <button id="encryptDemoBtn">ENCRYPT</button>
+      </div>
+
+      <div id="encryptDemoStatus" style="font-family:var(--mono);font-size:11px;color:var(--teal);margin-top:12px;"></div>
+
+      <div id="apiDemo" style="display:none;margin-top:16px;font-family:var(--mono);font-size:11px;"><div style="color:var(--teal);margin-bottom:6px;">API REQUEST</div><div style="background:#08070d;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-all;">POST /api/encrypt-demo
+Content-Type: application/json
+
+{ "value": "<span id="apiRequestValue"></span>" }</div><div style="color:var(--teal);margin:14px 0 6px;">API RESPONSE</div><div style="background:#08070d;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-all;" id="apiResponseBox"></div></div><div id="encryptDemoOutput" style="display:none;margin-top:16px;">
+        <div class="stack">
+          <div class="layer unlocked">
+            <div class="layer-head">
+              <div class="layer-name">AES-256-GCM</div>
+              <span class="layer-tag">LIVE API RESPONSE</span>
+            </div>
+
+            <div class="layer-body">
+              <div>
+                <div class="field-label">Ciphertext</div>
+                <div class="field-value" id="demoCiphertext" style="word-break:break-all;"></div>
+              </div>
+
+              <div>
+                <div class="field-label">Initialization Vector (IV)</div>
+                <div class="field-value" id="demoIV" style="word-break:break-all;"></div>
+              </div>
+
+              <div>
+                <div class="field-label">Authentication Tag</div>
+                <div class="field-value" id="demoTag" style="word-break:break-all;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel audit">
       <div class="panel-title">Audit Log - every disclosure event</div>
       <div id="auditList"></div>
@@ -478,6 +527,36 @@ async function loadAudit() {
 }
 
 detectBackend();
+
+document.getElementById("encryptDemoBtn").addEventListener("click", async function () {
+  const value = document.getElementById("demoInput").value;
+  const status = document.getElementById("encryptDemoStatus");
+  const output = document.getElementById("encryptDemoOutput");
+  if (!value) { status.textContent = "Enter a value first."; return; }
+  status.textContent = "Encrypting with STRATA API...";
+  output.style.display = "none";
+  try {
+    const response = await fetch("/api/encrypt-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: value })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Encryption failed");
+    document.getElementById("apiDemo").style.display = "block";
+    document.getElementById("apiRequestValue").textContent = value;
+    document.getElementById("apiResponseBox").textContent = JSON.stringify({ algorithm: data.algorithm, plaintextLength: data.plaintextLength, ciphertext: data.ciphertext, iv: data.iv, authTag: data.authTag }, null, 2);
+
+    document.getElementById("demoCiphertext").textContent = data.ciphertext;
+    document.getElementById("demoIV").textContent = data.iv;
+    document.getElementById("demoTag").textContent = data.authTag;
+    status.textContent = "✓ AES-256-GCM encryption successful • " + data.plaintextLength + " bytes";
+    output.style.display = "block";
+  } catch (error) {
+    status.textContent = "✗ " + error.message;
+    console.error("STRATA encryption error:", error);
+  }
+});
 </script>
 </body>
 </html>

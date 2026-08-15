@@ -158,6 +158,30 @@ app.get('/api/audit', (req, res) => {
   res.json(AUDIT_LOG.slice(0, 50));
 });
 
+app.post('/api/encrypt-demo', (req, res) => {
+  const value = req.body && req.body.value;
+  if (typeof value !== 'string' || value.length === 0) {
+    return res.status(400).json({ error: 'value is required' });
+  }
+
+  const key = crypto.randomBytes(32);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(Buffer.from(value, 'utf8')),
+    cipher.final()
+  ]);
+  const tag = cipher.getAuthTag();
+
+  res.json({
+    algorithm: 'AES-256-GCM',
+    plaintextLength: Buffer.byteLength(value, 'utf8'),
+    ciphertext: ciphertext.toString('base64'),
+    iv: iv.toString('base64'),
+    authTag: tag.toString('base64')
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('STRATA running:');
