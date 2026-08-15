@@ -1,0 +1,12 @@
+{
+  "name": "ps15-layered-encryption",
+  "version": "0.1.0",
+  "description": "Layered data encryption with role-based selective disclosure (no Docker version)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

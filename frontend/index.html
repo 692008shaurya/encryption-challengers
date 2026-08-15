@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PS-15: Layered Data Encryption Demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; background:#0d0d1a; color:#eee; }
+  h1 { font-size: 1.4rem; }
+  select, button { padding: 8px 14px; font-size: 1rem; margin-right: 10px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+  th, td { border: 1px solid #333; padding: 8px 12px; text-align: left; }
+  th { background: #1a1a2e; }
+  .hidden { color: #888; font-style: italic; }
+  .badge { background:#7c3aed; padding:2px 8px; border-radius:6px; font-size:0.75rem; }
+</style>
+</head>
+<body>
+  <h1>PS-15 — Layered Data Encryption <span class="badge">selective disclosure demo</span></h1>
+  <p>Select a role and fetch the same transaction data — notice which fields are visible.</p>
+
+  <label>Role:</label>
+  <select id="role">
+    <option value="auditor">Auditor (full access)</option>
+    <option value="clerk">Clerk (restricted)</option>
+  </select>
+  <button onclick="loadData()">Fetch Transactions</button>
+
+  <table id="resultTable" style="display:none">
+    <thead>
+      <tr><th>ID</th><th>Reference</th><th>Status</th><th>Amount</th><th>Counterparty Account</th></tr>
+    </thead>
+    <tbody id="resultBody"></tbody>
+  </table>
+
+  <script>
+    async function loadData() {
+      const role = document.getElementById("role").value;
+      // Same origin now — server serves both API and frontend
+      const res = await fetch(`/transactions?role=${role}`);
+      const json = await res.json();
+
+      const tbody = document.getElementById("resultBody");
+      tbody.innerHTML = "";
+
+      json.transactions.forEach(tx => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${tx.id}</td>
+          <td>${tx.reference_id}</td>
+          <td>${tx.status}</td>
+          <td class="${tx.amount === '***HIDDEN***' ? 'hidden' : ''}">${tx.amount}</td>
+          <td class="${tx.counterparty_account === '***HIDDEN***' ? 'hidden' : ''}">${tx.counterparty_account}</td>
+        `;
+        tbody.appendChild(row);
+      });
+
+      document.getElementById("resultTable").style.display = "table";
+    }
+  </script>
+</body>
+</html>
