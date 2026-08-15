@@ -15,7 +15,7 @@ const crypto = require("crypto");
 // Demo-only key — mention in your pitch that a real system would use
 // Acra-style key zones + rotation instead of one static key.
 const MASTER_KEY = Buffer.from(
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "hex"
 ).subarray(0, 32);
 
@@ -62,3 +62,4 @@ function decryptField(base64Blob) {
 }
 
 module.exports = { encryptField, decryptField };
+
