@@ -1,68 +1,36 @@
-# 🔐 STRATA — Layered Data Encryption & Selective Disclosure
+# STRATA — Layered Data Encryption
 
 > **PS-15 — Layered Data Encryption**
 
-STRATA is a security-focused system designed for **multi-party financial transactions** where different participants should only be able to access the information they actually need.
+STRATA is a cybersecurity prototype for **selective disclosure of sensitive transaction data**.
 
-Instead of giving every user access to an entire decrypted transaction, STRATA uses **role-based selective disclosure** to control which sensitive fields can be revealed.
-
-The system combines:
-
-- 🔐 Field-level encryption
-- 👥 Role-based access control
-- 🎯 Selective disclosure
-- 🛡️ Need-to-know data access
-- 🔑 Authenticated encryption using AES-256-GCM
-- 🚧 Planned Acra-based security infrastructure
+Instead of giving every trusted party access to an entire decrypted transaction, STRATA divides transaction data into independent encryption layers and releases only the keys required by the user's role.
 
 ---
 
-# 🌐 Live Demo
+## Problem
 
-## ⚠️ Important
+Financial transactions can contain multiple types of sensitive information:
 
-The applications currently run locally on two different ports.
+- Metadata
+- Routing and amount
+- Party identity
+- Compliance and risk data
 
-`localhost` addresses are **not accessible to someone viewing this GitHub repository from another computer**.
+Different parties need different parts of this information.
 
-### Local development
-
-| Application | Local URL | Purpose |
-|---|---|---|
-| 🟣 **Main STRATA** | `http://localhost:3000` | Main STRATA application |
-| 🔐 **Encryption Demo** | `http://localhost:4000` | Demonstrates encryption and selective disclosure |
-
-### Public demo
-
-> 🚧 **Public deployment coming soon.**
-
-Once deployed, the public URLs will be placed here:
-
-**Main STRATA:**  
-`[LIVE DEMO LINK — TO BE ADDED]`
-
-**Encryption / Selective Disclosure Demo:**  
-`[LIVE DEMO LINK — TO BE ADDED]`
+STRATA follows a **need-to-know model** where access to one part of a transaction does not automatically expose the rest.
 
 ---
 
-# 🧠 What is STRATA?
+## Solution
 
-STRATA is the **application and policy layer** of the project.
-
-The main idea is:
-
-> **A user should not receive sensitive information simply because the application has access to it.**
-
-Instead, STRATA determines:
+Each transaction is protected using multiple encryption layers.
 
 ```text
-Who is requesting the data?
-          ↓
-What role do they have?
-          ↓
-What information does that role need?
-          ↓
-Which encrypted fields are they allowed to access?
-          ↓
-Only authorized information is disclosed.
+Transaction
+│
+├── Metadata
+├── Routing & Amount
+├── Party Identity
+└── Compliance & Risk
